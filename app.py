@@ -1,30 +1,42 @@
 import streamlit as st
+import pandas as pd
+import random
+import time
+from urllib.parse import urlparse
+from duckduckgo_search import DDGS
 import cloudscraper
 from bs4 import BeautifulSoup
 import re
-import pandas as pd
-from duckduckgo_search import DDGS
-from urllib.parse import urlparse
-import time
-import random
-import urllib3
-import folium
-from streamlit_folium import st_folium
+from llama_cpp import Llama
 
+# Impostazioni per Streamlit
 st.set_page_config(page_title="Trova Clienti", layout="wide")
 
-# Regex email conforme agli standard RFC 5322
+# Regex per estrarre le email
 EMAIL_REGEX = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
+# Crea il scraper per l'analisi dei siti
 scraper = cloudscraper.create_scraper(
     browser={"browser": "chrome", "platform": "windows", "mobile": False},
     disableCloudflareV1=True
 )
 
+# Inizializzazione del modello LLM locale (Mistral)
+llm = Llama(model_path="models/mistral-7b-instruct-v0.1.Q4_K_M.gguf", n_ctx=2048)
 
+# Funzione per generare la query avanzata usando LLM locale
+def generate_advanced_query(settore, dimensione, regione):
+    prompt = (
+        f"Sei un esperto di marketing e lead generation. Genera una query di ricerca dettagliata e naturale "
+        f"per trovare aziende italiane nel settore '{settore}', con dimensione '{dimensione}', situate in '{regione}'. "
+        f"Fornisci una frase adatta per cercare su motori di ricerca come DuckDuckGo,"
+        f"Ritorna solo ed esclusivamente la query senza punteggiatura cercando di essere più coinciso possibile ed ometti informazioni irrilevanti."
+    )
+    output = llm(prompt=f"[INST] {prompt} [/INST]", max_tokens=100, temperature=0.7, stop=["</s>"])
+    return output["choices"][0]["text"].strip()
+
+# Funzione per cercare su DuckDuckGo
 def duckduckgo_search_sites(query, max_results=10):
     results = set()
     with DDGS() as ddgs:
@@ -34,7 +46,7 @@ def duckduckgo_search_sites(query, max_results=10):
                 results.add(urlparse(url).scheme + "://" + urlparse(url).netloc)
     return list(results)
 
-
+# Funzione per estrarre le email da una pagina HTML
 def extract_emails_from_url(url):
     try:
         response = scraper.get(url, timeout=10)
@@ -49,6 +61,7 @@ def extract_emails_from_url(url):
             return all_emails, "Email trovate con successo"
         else:
             return [], f"Nessuna email valida trovata (pagina principale + {', '.join(contact_statuses)})"
+
     except Exception as e:
         if "certificate verify failed" in str(e):
             return [], f"Sito con SSL non valido ({url})"
@@ -56,7 +69,7 @@ def extract_emails_from_url(url):
             return [], f"Regex malformato: controlla la definizione di EMAIL_REGEX"
         return [], f"Errore di richiesta: {str(e)} ({url})"
 
-
+# Funzione per estrarre le email dal testo della pagina HTML
 def extract_clean_emails(html_text):
     soup = BeautifulSoup(html_text, "html.parser")
     mailtos = [a.get("href")[7:] for a in soup.find_all("a", href=True) if a.get("href", "").startswith("mailto:")]
@@ -66,7 +79,6 @@ def extract_clean_emails(html_text):
     header_emails = re.findall(EMAIL_REGEX, header.get_text().lower()) if header else []
     footer_emails = re.findall(EMAIL_REGEX, footer.get_text().lower()) if footer else []
     all_emails = list(set(mailtos + text_emails + header_emails + footer_emails))
-
     clean_emails = [
         e for e in all_emails
         if not any(bad in e.lower() for bad in ["pec", "linkedin", "telefono", "fax"])
@@ -75,7 +87,7 @@ def extract_clean_emails(html_text):
     ]
     return clean_emails
 
-
+# Funzione per controllare le pagine di contatto comuni
 def try_common_contact_pages(base_url):
     contact_paths = ["/contatti", "/contact", "/about", "/chi-siamo", "/contact-us/"]
     found_emails = []
@@ -96,21 +108,17 @@ def try_common_contact_pages(base_url):
 
     return list(set(found_emails)), statuses
 
-
 # Funzione principale di Streamlit
 def main():
     st.title("🔍 Ricerca Clienti Aziendali + Email")
     st.markdown("Seleziona i filtri per migliorare la qualità dei risultati di ricerca.")
 
-    # Selezione delle opzioni
     col1, col2, col3 = st.columns(3)
 
-    # Settore e dimensione aziendale
     with col1:
         settore = st.selectbox("Settore", ["", "Risorse Umane", "Informatica", "Marketing", "Finanza"])
 
     with col2:
-        # Selezione della regione italiana
         regioni_italiane = [
             "Abruzzo", "Basilicata", "Calabria", "Campania", "Emilia-Romagna", "Friuli Venezia Giulia",
             "Lazio", "Liguria", "Lombardia", "Marche", "Molise", "Piemonte", "Puglia", "Sardegna", "Sicilia",
@@ -124,8 +132,7 @@ def main():
     max_results = st.slider("Numero massimo di siti da analizzare", 5, 50, 10)
 
     if st.button("Cerca Clienti"):
-        query_parts = [settore, dimensione, regione]
-        query = "aziende " + " ".join([q for q in query_parts if q])
+        query = generate_advanced_query(settore, dimensione, regione)
 
         st.info(f"Inizio ricerca per: '{query}'...")
         all_urls = duckduckgo_search_sites(query, max_results=max_results * 3)
@@ -161,7 +168,7 @@ def main():
 
             i += 1
             progress.progress(min(i / max_results, 1.0))
-            time.sleep(random.uniform(1.5, 3.5))  # Ritardo casuale per evitare blocchi
+            time.sleep(random.uniform(1.5, 3.5))
 
         if data_utili:
             st.success("✅ Risultati Utilizzabili")
@@ -177,7 +184,6 @@ def main():
             st.error("⚠️ Risultati Scartati")
             df_scartati = pd.DataFrame(data_scartati)
             st.dataframe(df_scartati, use_container_width=True)
-
 
 if __name__ == "__main__":
     main()

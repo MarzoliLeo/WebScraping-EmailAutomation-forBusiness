@@ -1,7 +1,8 @@
 streamlit
-//requests
 beautifulsoup4
 pandas
 duckduckgo-search
 cloudscraper
 folium
+transformers
+torch
