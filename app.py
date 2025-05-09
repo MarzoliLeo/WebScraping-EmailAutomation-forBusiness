@@ -1,19 +1,23 @@
 import streamlit as st
 import pandas as pd
-import random
-import time
 from urllib.parse import urlparse
 from duckduckgo_search import DDGS
 import cloudscraper
 from bs4 import BeautifulSoup
 import re
 from llama_cpp import Llama
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from email_validator import validate_email, EmailNotValidError
+from googlesearch import search
+from email_sender import EmailSender
+
 
 # Impostazioni per Streamlit
 st.set_page_config(page_title="Trova Clienti", layout="wide")
 
-# Regex per estrarre le email
-EMAIL_REGEX = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"
+# Regex per trovare email candidate (filtrate poi con validazione)
+EMAIL_CANDIDATE_REGEX = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 # Crea il scraper per l'analisi dei siti
@@ -22,72 +26,81 @@ scraper = cloudscraper.create_scraper(
     disableCloudflareV1=True
 )
 
-# Inizializzazione del modello LLM locale (Mistral)
-llm = Llama(model_path="models/mistral-7b-instruct-v0.1.Q4_K_M.gguf", n_ctx=2048)
+# Lazy loading per il modello LLM
+_llm = None
+def get_llm():
+    global _llm
+    if _llm is None:
+        _llm = Llama(model_path="models/mistral-7b-instruct-v0.1.Q4_K_M.gguf", n_ctx=2048, n_threads=4)
+    return _llm
 
-# Funzione per generare la query avanzata usando LLM locale
-def generate_advanced_query(settore, dimensione, regione):
-    prompt = (
-        f"Sei un esperto di marketing e lead generation. Genera una query di ricerca dettagliata e naturale "
-        f"per trovare aziende italiane nel settore '{settore}', con dimensione '{dimensione}', situate in '{regione}'. "
-        f"Fornisci una frase adatta per cercare su motori di ricerca come DuckDuckGo,"
-        f"Ritorna solo ed esclusivamente la query senza punteggiatura cercando di essere più coinciso possibile ed ometti informazioni irrilevanti."
-    )
-    output = llm(prompt=f"[INST] {prompt} [/INST]", max_tokens=100, temperature=0.7, stop=["</s>"])
-    return output["choices"][0]["text"].strip()
+# Funzione per cercare su Google.
+def google_search_sites(query, max_results):
+    results = []
+    seen_domains = set()
+    try:
+        for url in search(query, num_results=max_results):
+            parsed = urlparse(url)
+            domain = parsed.netloc
+            if domain not in seen_domains:
+                seen_domains.add(domain)
+                results.append(url)
+            if len(results) >= max_results:
+                break
+    except Exception as e:
+        print(f"Errore nella ricerca Google: {e}")
+    return results
 
 # Funzione per cercare su DuckDuckGo
-def duckduckgo_search_sites(query, max_results=10):
-    results = set()
+def duckduckgo_search_sites(query, max_results):
+    results = []
+    seen_domains = set()
     with DDGS() as ddgs:
-        for r in ddgs.text(query, max_results=max_results * 5):
-            url = r.get("url") or r.get("href")
-            if url and url.startswith("http"):
-                results.add(urlparse(url).scheme + "://" + urlparse(url).netloc)
-    return list(results)
+        try:
+            for r in ddgs.text(query, max_results=max_results):
+                url = r.get("url") or r.get("href")
+                if url and url.startswith("http"):
+                    parsed = urlparse(url)
+                    domain = parsed.netloc
+                    if domain not in seen_domains:
+                        seen_domains.add(domain)
+                        results.append(url)
+                if len(results) >= max_results:
+                    break
+        except Exception as e:
+            print(f"Errore nella ricerca DuckDuckGo: {e}")
+    return results
 
-# Funzione per estrarre le email da una pagina HTML
-def extract_emails_from_url(url):
-    try:
-        response = scraper.get(url, timeout=10)
-        if response.status_code != 200:
-            return [], f"Errore HTTP {response.status_code} - {response.reason} ({url})"
+# Funzione per estrarre email con priorità
+PRIORITY_KEYWORDS = ["hr", "risorse", "human", "info", "lavoro"]
 
-        base_emails = extract_clean_emails(response.text)
-        contact_emails, contact_statuses = try_common_contact_pages(url)
-        all_emails = list(set(base_emails + contact_emails))
+def clean_valid_emails(emails):
+    valid_emails = []
+    for e in emails:
+        try:
+            valid = validate_email(e, check_deliverability=False)
+            email = valid.email
+            if not email.startswith(tuple("0123456789")) and email.split("@")[ -1].split(".")[-1] in ["com","it","gov","net","org","info","edu","mil","ru","cn","uk","io","int","mobi","biz","fr","de","xyz","sale","career"]:
+                valid_emails.append(email)
+        except EmailNotValidError:
+            continue
+    return list(set(valid_emails))
 
-        if all_emails:
-            return all_emails, "Email trovate con successo"
-        else:
-            return [], f"Nessuna email valida trovata (pagina principale + {', '.join(contact_statuses)})"
-
-    except Exception as e:
-        if "certificate verify failed" in str(e):
-            return [], f"Sito con SSL non valido ({url})"
-        elif "bad character range" in str(e):
-            return [], f"Regex malformato: controlla la definizione di EMAIL_REGEX"
-        return [], f"Errore di richiesta: {str(e)} ({url})"
-
-# Funzione per estrarre le email dal testo della pagina HTML
 def extract_clean_emails(html_text):
     soup = BeautifulSoup(html_text, "html.parser")
     mailtos = [a.get("href")[7:] for a in soup.find_all("a", href=True) if a.get("href", "").startswith("mailto:")]
-    text_emails = re.findall(EMAIL_REGEX, soup.get_text().lower())
+    text_emails = re.findall(EMAIL_CANDIDATE_REGEX, soup.get_text().lower())
     header = soup.find("header")
     footer = soup.find("footer")
-    header_emails = re.findall(EMAIL_REGEX, header.get_text().lower()) if header else []
-    footer_emails = re.findall(EMAIL_REGEX, footer.get_text().lower()) if footer else []
+    header_emails = re.findall(EMAIL_CANDIDATE_REGEX, header.get_text().lower()) if header else []
+    footer_emails = re.findall(EMAIL_CANDIDATE_REGEX, footer.get_text().lower()) if footer else []
     all_emails = list(set(mailtos + text_emails + header_emails + footer_emails))
-    clean_emails = [
-        e for e in all_emails
-        if not any(bad in e.lower() for bad in ["pec", "linkedin", "telefono", "fax"])
-           and "@" in e and "." in e.split("@")[1]
-           and len(e.split("@")[0]) > 2
-    ]
-    return clean_emails
 
-# Funzione per controllare le pagine di contatto comuni
+    filtered = clean_valid_emails(all_emails)
+    filtered.sort(key=lambda e: (not any(k in e for k in PRIORITY_KEYWORDS), e))
+
+    return filtered[:3]
+
 def try_common_contact_pages(base_url):
     contact_paths = ["/contatti", "/contact", "/about", "/chi-siamo", "/contact-us/"]
     found_emails = []
@@ -108,82 +121,171 @@ def try_common_contact_pages(base_url):
 
     return list(set(found_emails)), statuses
 
-# Funzione principale di Streamlit
+def extract_emails_from_url(url):
+    try:
+        response = scraper.get(url, timeout=10, headers=HEADERS, allow_redirects=True)
+        if response.status_code != 200:
+            return [], f"Errore HTTP {response.status_code} - {response.reason} ({url})"
+
+        base_emails = extract_clean_emails(response.text)
+        if base_emails:
+            return base_emails, "Email trovate nella pagina principale"
+
+        contact_emails, contact_statuses = try_common_contact_pages(url)
+        if contact_emails:
+            return contact_emails, "Email trovate in pagine di contatto"
+
+        return [], f"Nessuna email trovata ({', '.join(contact_statuses)})"
+
+    except Exception as e:
+        return [], f"Errore durante l'accesso a {url}: {str(e)}"
+
+
 def main():
     st.title("🔍 Ricerca Clienti Aziendali + Email")
-    st.markdown("Seleziona i filtri per migliorare la qualità dei risultati di ricerca.")
+    st.markdown("Compila il form qui sotto per cercare aziende e trovare i loro contatti email.")
 
-    col1, col2, col3 = st.columns(3)
+    # Carica o inizializza i dati in sessione
+    if "data_utili" not in st.session_state:
+        st.session_state.data_utili = []
+    if "data_scartati" not in st.session_state:
+        st.session_state.data_scartati = []
 
-    with col1:
-        settore = st.selectbox("Settore", ["", "Risorse Umane", "Informatica", "Marketing", "Finanza"])
-
-    with col2:
-        regioni_italiane = [
+    with st.form(key="filtro_form"):
+        settore = st.selectbox("Settore", ["", "Realtà aumentata", "Risorse Umane", "Informatica", "Marketing", "Finanza"])
+        regione = st.selectbox("Regione", [
             "Abruzzo", "Basilicata", "Calabria", "Campania", "Emilia-Romagna", "Friuli Venezia Giulia",
             "Lazio", "Liguria", "Lombardia", "Marche", "Molise", "Piemonte", "Puglia", "Sardegna", "Sicilia",
-            "Toscana", "Trentino-Alto Adige", "Umbria", "Valle d'Aosta", "Veneto"
-        ]
-        regione = st.selectbox("Seleziona una Regione", regioni_italiane)
-
-    with col3:
+            "Toscana", "Trentino-Alto Adige", "Umbria", "Valle d'Aosta", "Veneto"])
         dimensione = st.selectbox("Dimensione Aziendale", ["", "Piccola", "Media", "Grande"])
+        codice_ateco = st.selectbox("Codice ATECO", ["", "62.01", "63.11", "72.10", "73.11", "74.10", "74.90", "80.10", "82.99"])
+        max_results = st.slider("Numero di risultati positivi da restituire", 1, 100, 50)
+        search_engine = st.radio("Motore di Ricerca", ("DuckDuckGo", "Google"))
+        submitted = st.form_submit_button("Cerca Clienti")
 
-    max_results = st.slider("Numero massimo di siti da analizzare", 5, 50, 10)
-
-    if st.button("Cerca Clienti"):
-        query = generate_advanced_query(settore, dimensione, regione)
-
-        st.info(f"Inizio ricerca per: '{query}'...")
-        all_urls = duckduckgo_search_sites(query, max_results=max_results * 3)
-
+    if submitted:
+        llm = get_llm()
         visited_domains = set()
+        used_queries = set()
         data_utili = []
         data_scartati = []
-        progress = st.progress(0)
-        valid_count = 0
-        i = 0
+        lock = threading.Lock()
+        max_attempts = 10
+        progress_bar = st.progress(0)
+        attempts = 0
 
-        while valid_count < max_results and i < len(all_urls):
-            url = all_urls[i]
-            domain = urlparse(url).netloc
-            if domain in visited_domains:
-                i += 1
-                continue
+        st.info("⏳ Ricerca in corso... questo potrebbe richiedere un po' di tempo.")
 
-            visited_domains.add(domain)
-            emails, status = extract_emails_from_url(url)
+        while len(data_utili) < max_results and attempts < max_attempts:
+            attempts += 1
 
-            result = {
-                "Sito Web": domain,
-                "Email trovate": ", ".join(emails) if emails else "Nessuna",
-                "Stato": status
-            }
+            with st.spinner(f"Generazione query intelligente (tentativo {attempts})..."):
+                prompt = (
+                    f"You are a marketing expert. Generate a single varied search query in Italian that can be used on '{search_engine}' to find Italian companies in the '{settore}' sector, "
+                    f"located in '{regione}', with a size of '{dimensione}', ATECO code '{codice_ateco}'. The query must be original and different from previously generated ones. "
+                    "Return only the query in Italian, without quotes or explanations."
+                )
+                output = llm(prompt=f"[INST] {prompt} [/INST]", max_tokens=100, temperature=0.9, stop=["</s>"])
+                query = output["choices"][0]["text"].strip()
 
-            if emails:
-                data_utili.append(result)
-                valid_count += 1
-            else:
-                data_scartati.append(result)
+                if query in used_queries:
+                    continue
+                used_queries.add(query)
+                st.info(f"Query generata: {query}")
 
-            i += 1
-            progress.progress(min(i / max_results, 1.0))
-            time.sleep(random.uniform(1.5, 3.5))
+            all_urls = google_search_sites(query, max_results=max_results * 10) if search_engine == "Google" else duckduckgo_search_sites(query, max_results=max_results * 10)
 
-        if data_utili:
-            st.success("✅ Risultati Utilizzabili")
-            df_validi = pd.DataFrame(data_utili)
-            st.dataframe(df_validi, use_container_width=True)
-            json_results = df_validi.to_json(orient="records", lines=True)
-            st.download_button("📥 Scarica risultati in JSON", json_results, "risultati.json", "application/json")
+            def process_url(i, url):
+                domain = urlparse(url).netloc
+                with lock:
+                    if domain in visited_domains or len(data_utili) >= max_results:
+                        return
+                    visited_domains.add(domain)
+
+                emails, status = extract_emails_from_url(url)
+                result = {
+                    "Sito Web": domain,
+                    "Email trovate": ", ".join(emails) if emails else "Nessuna",
+                    "Stato": status
+                }
+
+                with lock:
+                    if emails and len(data_utili) < max_results:
+                        data_utili.append(result)
+                    else:
+                        data_scartati.append(result)
+
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                futures = []
+                for i, url in enumerate(all_urls):
+                    if len(data_utili) >= max_results:
+                        break
+                    futures.append(executor.submit(process_url, i, url))
+                for i, future in enumerate(futures):
+                    future.result()
+                    progress_bar.progress(min(1.0, len(data_utili) / max_results))
+
+        st.session_state.data_utili = data_utili
+        st.session_state.data_scartati = data_scartati
+
+    # Mostra risultati anche dopo il submit o dopo un download
+    if st.session_state.data_utili:
+        st.success("✅ Risultati Utilizzabili")
+        df_validi = pd.DataFrame(st.session_state.data_utili)
+        st.dataframe(df_validi, use_container_width=True)
+        json_results = df_validi.to_json(orient="records", indent=2, force_ascii=False)
+        st.download_button("📥 Scarica risultati in JSON", json_results, "risultati.json", "application/json")
+
+    if st.session_state.data_scartati:
+        st.markdown("---")
+        st.error("⚠️ Risultati Scartati")
+        df_scartati = pd.DataFrame(st.session_state.data_scartati)
+        st.dataframe(df_scartati, use_container_width=True)
+
+    # Sezione email
+    st.markdown("---")
+    st.header("📧 Invia Email ai Contatti Trovati")
+    uploaded_file = st.file_uploader("Carica un file JSON con i risultati validi", type=["json"])
+
+    if uploaded_file:
+        df_json = pd.read_json(uploaded_file)
+        st.dataframe(df_json)
+
+        sender = EmailSender()
+
+        all_emails = sender.extract_all_emails(df_json)
+        if all_emails:
+            example_site = df_json.iloc[0]["Sito Web"]
+            with st.spinner("🧠 Generazione della mail..."):
+                message = sender.generate_bulk_message(example_site)
+
+            subject = "Proposta di Collaborazione"
+
+            st.success("✅ Email generata. Verrà inviata a tutti i contatti elencati.")
+            st.markdown("**Anteprima del messaggio:**")
+            st.text_area("Messaggio", message, height=250)
+            st.markdown(f"**Totale destinatari unici:** {len(all_emails)}")
+
+            sender_email = st.text_input("Email mittente (es. Gmail)", value="", placeholder="nome@email.it")
+            sender_password = st.text_input("Password applicazione (no password personale)", type="password")
+
+            if st.button("📨 Invia Email a Tutti"):
+                if not sender_email or not sender_password:
+                    st.warning("Inserisci email e password.")
+                else:
+                    with st.spinner("📤 Invio email in corso..."):
+                        results = []
+                        for email in all_emails:
+                            success, status = sender.send_email(
+                                email, subject, message, sender_email, sender_password
+                            )
+                            results.append((email, status))
+                    st.success("✅ Invio completato")
+                    for email, status in results:
+                        st.write(f"{email}: {status}")
         else:
-            st.warning("❗ Nessun risultato utilizzabile trovato.")
+            st.warning("Nessun indirizzo email trovato nel file caricato.")
 
-        if data_scartati:
-            st.markdown("---")
-            st.error("⚠️ Risultati Scartati")
-            df_scartati = pd.DataFrame(data_scartati)
-            st.dataframe(df_scartati, use_container_width=True)
 
 if __name__ == "__main__":
     main()
