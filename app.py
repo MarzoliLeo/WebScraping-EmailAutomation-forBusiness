@@ -242,7 +242,6 @@ def main():
         df_scartati = pd.DataFrame(st.session_state.data_scartati)
         st.dataframe(df_scartati, use_container_width=True)
 
-    # Sezione email
     st.markdown("---")
     st.header("📧 Invia Email ai Contatti Trovati")
     uploaded_file = st.file_uploader("Carica un file JSON con i risultati validi", type=["json"])
@@ -252,37 +251,37 @@ def main():
         st.dataframe(df_json)
 
         sender = EmailSender()
-
         all_emails = sender.extract_all_emails(df_json)
+
         if all_emails:
             example_site = df_json.iloc[0]["Sito Web"]
-            with st.spinner("🧠 Generazione della mail..."):
-                message = sender.generate_bulk_message(example_site)
+
+            # Genera il messaggio una sola volta
+            if "generated_email" not in st.session_state:
+                with st.spinner("🧠 Generazione della mail..."):
+                    st.session_state.generated_email = sender.generate_bulk_message(example_site)
 
             subject = "Proposta di Collaborazione"
-
             st.success("✅ Email generata. Verrà inviata a tutti i contatti elencati.")
             st.markdown("**Anteprima del messaggio:**")
-            st.text_area("Messaggio", message, height=250)
+            message = st.text_area("Messaggio", st.session_state.generated_email, height=250,
+                                   key="manual_editable_message")
+
             st.markdown(f"**Totale destinatari unici:** {len(all_emails)}")
 
-            sender_email = st.text_input("Email mittente (es. Gmail)", value="", placeholder="nome@email.it")
-            sender_password = st.text_input("Password applicazione (no password personale)", type="password")
-
             if st.button("📨 Invia Email a Tutti"):
-                if not sender_email or not sender_password:
-                    st.warning("Inserisci email e password.")
-                else:
-                    with st.spinner("📤 Invio email in corso..."):
-                        results = []
-                        for email in all_emails:
-                            success, status = sender.send_email(
-                                email, subject, message, sender_email, sender_password
-                            )
-                            results.append((email, status))
-                    st.success("✅ Invio completato")
-                    for email, status in results:
-                        st.write(f"{email}: {status}")
+                with st.spinner("📤 Invio email in corso..."):
+                    results = []
+                    for email in all_emails:
+                        success, status = sender.send_email(
+                            email,
+                            subject,
+                            message  # testo modificabile dall'utente
+                        )
+                        results.append((email, status))
+                st.success("✅ Invio completato")
+                for email, status in results:
+                    st.write(f"{email}: {status}")
         else:
             st.warning("Nessun indirizzo email trovato nel file caricato.")
 
