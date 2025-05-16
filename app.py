@@ -1,80 +1,25 @@
 import streamlit as st
 import pandas as pd
 from urllib.parse import urlparse
-from duckduckgo_search import DDGS
 import cloudscraper
 from bs4 import BeautifulSoup
 import re
-from llama_cpp import Llama
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from email_validator import validate_email, EmailNotValidError
+from utils import clean_valid_emails, EMAIL_CANDIDATE_REGEX, PRIORITY_KEYWORDS
+from utils_llm import call_gemini_flash
+from email_ui import show_email_interface
 from googlesearch import search
-from email_sender import EmailSender
 
 st.set_page_config(page_title="Trova Clienti", layout="wide")
 
-EMAIL_CANDIDATE_REGEX = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"
 PARTITA_IVA_REGEX = r"(IT)?\s?\d{11}"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
-PRIORITY_KEYWORDS = ["hr", "risorse", "human", "info", "lavoro"]
 
 scraper = cloudscraper.create_scraper(
     browser={"browser": "chrome", "platform": "windows", "mobile": False},
     disableCloudflareV1=True
 )
-
-_llm = None
-def get_llm():
-    global _llm
-    if _llm is None:
-        _llm = Llama(model_path="models/mistral-7b-instruct-v0.1.Q4_K_M.gguf", n_ctx=2048, n_threads=4)
-    return _llm
-
-def google_search_sites(query, max_results):
-    results, seen_domains = [], set()
-    try:
-        for url in search(query, num_results=max_results):
-            domain = urlparse(url).netloc
-            if domain not in seen_domains:
-                seen_domains.add(domain)
-                results.append(url)
-            if len(results) >= max_results:
-                break
-    except Exception as e:
-        print(f"Errore nella ricerca Google: {e}")
-    return results
-
-def duckduckgo_search_sites(query, max_results):
-    results, seen_domains = [], set()
-    with DDGS() as ddgs:
-        try:
-            for r in ddgs.text(query, max_results=max_results):
-                url = r.get("url") or r.get("href")
-                if url and url.startswith("http"):
-                    domain = urlparse(url).netloc
-                    if domain not in seen_domains:
-                        seen_domains.add(domain)
-                        results.append(url)
-                if len(results) >= max_results:
-                    break
-        except Exception as e:
-            print(f"Errore nella ricerca DuckDuckGo: {e}")
-    return results
-
-def clean_valid_emails(emails):
-    valid_emails = []
-    for e in emails:
-        try:
-            valid = validate_email(e, check_deliverability=False)
-            email = valid.email
-            if not email.startswith(tuple("0123456789")) and email.split("@")[-1].split(".")[-1] in [
-                "com", "it", "gov", "net", "org", "info", "edu", "mil", "ru", "cn", "uk", "io", "int", "mobi", "biz", "fr", "de", "xyz", "sale", "career"
-            ]:
-                valid_emails.append(email)
-        except EmailNotValidError:
-            continue
-    return list(set(valid_emails))
 
 def extract_emails_and_piva(html_text):
     soup = BeautifulSoup(html_text, "html.parser")
@@ -133,9 +78,33 @@ def extract_emails_from_url(url):
     except Exception as e:
         return [], f"Errore durante l'accesso a {url}: {str(e)}"
 
+def generate_company_list_prompt(settore, regione, dimensione, exclude_names):
+    exclude_str = ", ".join(exclude_names) if exclude_names else "nessuno"
+    return (
+        f"Elenca esattamente 10 piccole aziende italiane di {settore.lower()}, "
+        f"con meno di {dimensione} dipendenti, situate in {regione}. "
+        f"Se possibile, includi il sito web. Evita questi nomi: {exclude_str}.\n"
+        f"Formato: <Nome Azienda> - <Sito Web>\n"
+        f"Esempio:\nABC Formazione - www.abcformazione.it\nNextLab Srl - www.nextlab.it\n"
+        f"--- Inizio elenco ---"
+    )
+
+
+def find_site_by_name(name):
+    try:
+        query = f"{name} sito ufficiale"
+        for url in search(query, num_results=5):
+            if any(social in url for social in ["facebook", "linkedin", "instagram"]):
+                continue
+            if re.match(r"https?://(www\.)?[a-zA-Z0-9\-]+\.[a-z]{2,}", url):
+                return url
+    except Exception:
+        pass
+    return None
+
+
 def show_scraper_interface():
     st.title("🔍 Ricerca Clienti Aziendali + Email")
-    st.markdown("Trova solo aziende con **email** e **partita IVA** dal sito web.")
 
     if "data_utili" not in st.session_state:
         st.session_state.data_utili = []
@@ -143,62 +112,116 @@ def show_scraper_interface():
         st.session_state.data_scartati = []
 
     with st.form(key="filtro_form"):
-        settore = st.selectbox("Settore", ["", "Formazione", "Risorse Umane", "Informatica", "Marketing", "Finanza"])
-        regione = st.selectbox("Regione", ["Abruzzo", "Basilicata", "Calabria", "Campania", "Emilia-Romagna", "Friuli Venezia Giulia", "Lazio", "Liguria", "Lombardia", "Marche", "Molise", "Piemonte", "Puglia", "Sardegna", "Sicilia", "Toscana", "Trentino-Alto Adige", "Umbria", "Valle d'Aosta", "Veneto"])
-        dimensione = st.selectbox("Dimensione Aziendale", ["", "Piccola", "Media", "Grande"])
-        codice_ateco = st.selectbox("Codice ATECO", ["", "62.01", "63.11", "72.10", "73.11", "74.10", "74.90", "80.10", "82.99"])
-        max_results = st.slider("Numero di risultati positivi", 1, 100, 30)
-        search_engine = st.radio("Motore di Ricerca", ("DuckDuckGo", "Google"))
+        settore = st.text_input("Settore (es. Formazione professionale)")
+        regione = st.text_input("Regione (es. Abruzzo)")
+        dimensione = st.number_input("Numero massimo di dipendenti", min_value=1, max_value=1000, value=50, step=1)
+        #codice_ateco = st.selectbox("Codice ATECO", ["", "62.01", "63.11", "72.10", "73.11", "74.10", "74.90", "80.10", "82.99"])
+        max_results = st.slider("Numero di risultati positivi", 10, 100, 10)
         submitted = st.form_submit_button("Cerca Clienti")
 
     if submitted:
-        llm = get_llm()
-        visited_domains = set()
-        used_queries = set()
+        found_names = set()
         data_utili, data_scartati = [], []
         lock = threading.Lock()
-        max_attempts = 10
-        attempts = 0
         progress_bar = st.progress(0)
+        st.info("⏳ Ricerca in corso...")
 
-        st.info("⏳ Inizio ricerca automatica in corso...")
+        debug_log = st.empty()
+        debug_lines = []
+        log_lock = threading.Lock()
 
-        while len(data_utili) < max_results and attempts < max_attempts:
-            attempts += 1
+        def log(message):
+            with log_lock:
+                debug_lines.append(message)
 
-            prompt = (
-                f"You are a marketing expert. Generate a single varied search query in Italian that can be used on '{search_engine}' to find Italian companies in the '{settore}' sector, "
-                f"located in '{regione}', with a size of '{dimensione}', ATECO code '{codice_ateco}'. The query must be in prose original and different from previously generated ones. "
-                "Return only the query in Italian, without quotes or explanations."
-            )
-            output = llm(prompt=f"[INST] {prompt} [/INST]", max_tokens=100, temperature=0.9, stop=["</s>"])
-            query = output["choices"][0]["text"].strip()
-            if query in used_queries:
-                continue
-            used_queries.add(query)
-            st.info(f"Query: {query}")
+        max_iterations = 10
+        iteration = 0
+        while len(data_utili) < max_results and iteration < max_iterations:
+            iteration += 1
 
-            all_urls = google_search_sites(query, max_results * 10) if search_engine == "Google" else duckduckgo_search_sites(query, max_results * 10)
+            prompt = generate_company_list_prompt(settore, regione, dimensione, list(found_names))
+            log(f"🔁 Nuovo prompt LLM con {len(found_names)} nomi esclusi")
+            output = call_gemini_flash(prompt)
+            lines = output.strip().splitlines()
 
-            def process_url(i, url):
+            companies = []
+            for line in lines:
+                if not line.strip():
+                    continue
+                text = line.strip()
+                if not text:
+                    continue
+                # split in nome e sito
+                if "-" in text:
+                    name_part, site_part = text.split("-", 1)
+                    # pulisco il nome
+                    name = re.sub(r"^[\s\*\d\.\)\-]+", "", name_part)
+                    name = re.sub(r"\*\*", "", name).strip()
+
+                    # prendo il sito (anche senza http) e aggiungo schema
+                    raw = site_part.strip()
+                    # rimuovo eventuali asterischi/bullet residui
+                    raw = re.sub(r"^[\*\s]+", "", raw)
+                    if re.match(r"^[a-zA-Z0-9\-]+\.[a-z]{2,}", raw):
+                        site = "https://" + raw
+                    elif raw.startswith("http"):
+                        site = raw
+                    else:
+                        site = None
+                else:
+                    name = line.strip()
+                    site = find_site_by_name(name)
+                if name not in found_names and site:
+                    companies.append((name, site))
+                    found_names.add(name)
+                if len(companies) >= 10:
+                    break
+            log(f"🌐 Trovate {len(companies)} aziende dal modello")
+
+            def process_company(name, url):
                 domain = urlparse(url).netloc
                 with lock:
-                    if domain in visited_domains or len(data_utili) >= max_results:
+                    if any(d["Sito Web"] == domain for d in data_utili):
+                        log(f"⚠️ Dominio già processato: {domain}")
                         return
-                    visited_domains.add(domain)
                 emails, status = extract_emails_from_url(url)
-                result = {"Sito Web": domain, "Email trovate": ", ".join(emails) if emails else "Nessuna", "Stato": status}
+                result = {
+                    "Nome Azienda": name,
+                    "Sito Web": domain,
+                    "Email trovate": ", ".join(emails) if emails else "Nessuna",
+                    "Stato": status
+                }
                 with lock:
-                    (data_utili if emails else data_scartati).append(result)
+                    if emails:
+                        data_utili.append(result)
+                        log(f"✅ Email trovate per {name}: {result['Email trovate']}")
+                    else:
+                        data_scartati.append(result)
+                        log(f"❌ Nessuna email per {name}")
 
             with ThreadPoolExecutor(max_workers=10) as executor:
-                futures = [executor.submit(process_url, i, url) for i, url in enumerate(all_urls) if len(data_utili) < max_results]
-                for i, future in enumerate(futures):
-                    future.result()
+                futures = [executor.submit(process_company, name, site) for name, site in companies]
+                for f in futures:
+                    f.result()
                     progress_bar.progress(min(1.0, len(data_utili) / max_results))
+
+                # Mostra i log dopo l'elaborazione del batch
+                with log_lock:
+                    if debug_lines:
+                        st.markdown("🪵 **Log Debug:**")
+                        st.markdown("\n".join(f"- {line}" for line in debug_lines[-25:]))
+                        debug_lines.clear()
+
+            if not any(d["Email trovate"] != "Nessuna" for d in data_utili[-len(companies):]):
+                log("⚠️ Nessuna email valida trovata in questo batch. Interrompo il ciclo.")
+                break
 
         st.session_state.data_utili = data_utili
         st.session_state.data_scartati = data_scartati
+
+        with st.expander("🪵 Log dettagliato (debug)"):
+            for line in debug_lines:
+                st.markdown(f"- {line}")
 
     if st.session_state.data_utili:
         st.success("✅ Risultati Utilizzabili")
@@ -212,38 +235,6 @@ def show_scraper_interface():
         st.error("⚠️ Risultati Scartati")
         st.dataframe(pd.DataFrame(st.session_state.data_scartati), use_container_width=True)
 
-def show_email_interface():
-    st.header("📧 Invia Email ai Contatti")
-    uploaded_file = st.file_uploader("Carica un file JSON con i contatti validi", type=["json"])
-    if uploaded_file:
-        df_json = pd.read_json(uploaded_file)
-        st.dataframe(df_json)
-
-        sender = EmailSender()
-        all_emails = sender.extract_all_emails(df_json)
-
-        if all_emails:
-            example_site = df_json.iloc[0]["Sito Web"]
-            if "generated_email" not in st.session_state:
-                with st.spinner("🧠 Generazione della mail..."):
-                    st.session_state.generated_email = sender.generate_bulk_message(example_site)
-
-            subject = "Proposta di Collaborazione"
-            st.success("✅ Email generata. Verrà inviata a tutti i contatti elencati.")
-            message = st.text_area("Messaggio", st.session_state.generated_email, height=250, key="manual_editable_message")
-
-            if st.button("📨 Invia Email a Tutti"):
-                with st.spinner("📤 Invio email in corso..."):
-                    results = []
-                    for email in all_emails:
-                        success, status = sender.send_email(email, subject, message)
-                        results.append((email, status))
-                st.success("✅ Invio completato")
-                for email, status in results:
-                    st.write(f"{email}: {status}")
-        else:
-            st.warning("Nessun indirizzo email trovato nel file caricato.")
-
 def main():
     st.sidebar.title("📚 Navigazione")
     section = st.sidebar.radio("Seleziona sezione", ["Ricerca Email", "Invio Email"])
@@ -254,4 +245,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
