@@ -154,15 +154,18 @@ def show_scraper_interface():
                 # split in nome e sito
                 if "-" in text:
                     name_part, site_part = text.split("-", 1)
-                    # pulisco il nome
+                    # pulizia nome
                     name = re.sub(r"^[\s\*\d\.\)\-]+", "", name_part)
                     name = re.sub(r"\*\*", "", name).strip()
 
-                    # prendo il sito (anche senza http) e aggiungo schema
-                    raw = site_part.strip()
-                    # rimuovo eventuali asterischi/bullet residui
-                    raw = re.sub(r"^[\*\s]+", "", raw)
-                    if re.match(r"^[a-zA-Z0-9\-]+\.[a-z]{2,}", raw):
+                    # estrazione URL Markdown, fallback a testo grezzo
+                    md_link = re.compile(r'\[.*?\]\(\s*(https?://[^\)]+)\s*\)')
+                    m = md_link.search(site_part)
+                    raw = m.group(1) if m else site_part.strip()
+                    raw = re.sub(r'^[\*\s]+', '', raw)  # rimuovo bullet residui
+
+                    # normalizzo schema
+                    if re.match(r'^[a-zA-Z0-9\-.]+\.[a-z]{2,}', raw):
                         site = "https://" + raw
                     elif raw.startswith("http"):
                         site = raw
