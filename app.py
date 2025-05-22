@@ -21,6 +21,12 @@ scraper = cloudscraper.create_scraper(
     disableCloudflareV1=True
 )
 
+if "start_email_flow" not in st.session_state:
+    st.session_state.start_email_flow = False
+if "email_json_data" not in st.session_state:
+    st.session_state.email_json_data = None
+
+
 def extract_emails_and_piva(html_text):
     soup = BeautifulSoup(html_text, "html.parser")
     mailtos = [a.get("href")[7:] for a in soup.find_all("a", href=True) if a.get("href", "").startswith("mailto:")]
@@ -227,24 +233,67 @@ def show_scraper_interface():
                 st.markdown(f"- {line}")
 
     if st.session_state.data_utili:
+        #Sezione tabella risultati positivi
         st.success("✅ Risultati Utilizzabili")
+
+        selected_email_idx = st.session_state.get("selected_email_idx", None)
+        for idx, entry in enumerate(st.session_state.data_utili):
+            with st.form(key=f"company_form_{idx}", clear_on_submit=False):
+                col1, col2, col3, col4, col5 = st.columns([2, 3, 3, 3, 2])
+                with col1:
+                    st.markdown(f"**{entry['Nome Azienda']}**")
+                with col2:
+                    st.markdown(entry["Sito Web"])
+                with col3:
+                    st.markdown(entry["Email trovate"])
+                with col4:
+                    st.markdown(entry["Stato"])
+                with col5:
+                    if st.form_submit_button("✉️ Scrivi Email"):
+                        st.session_state.selected_email_idx = idx
+                        st.session_state.email_json_data = pd.DataFrame([entry]).to_json(orient="records", indent=2,
+                                                                                         force_ascii=False)
+                        st.rerun()
+
+            # Se è selezionata questa azienda, mostra il form email
+            if selected_email_idx == idx:
+                st.markdown("#### ✍️ Componi Email")
+                show_email_interface(st.session_state.email_json_data)
+
+                # Aggiungi pulsante per chiudere il modulo email
+                if st.button("❌ Chiudi modulo email", key=f"close_email_{idx}"):
+                    st.session_state.selected_email_idx = None
+                    st.rerun()
+
+        #sezione scaricare tutti i contatti json.
         df = pd.DataFrame(st.session_state.data_utili)
-        st.dataframe(df, use_container_width=True)
+        #st.dataframe(df, use_container_width=True)
         json_results = df.to_json(orient="records", indent=2, force_ascii=False)
         st.download_button("📥 Scarica risultati in JSON", json_results, "risultati.json", "application/json")
 
+    #sezione tabella scarti
     if st.session_state.data_scartati:
         st.markdown("---")
         st.error("⚠️ Risultati Scartati")
         st.dataframe(pd.DataFrame(st.session_state.data_scartati), use_container_width=True)
 
+
 def main():
     st.sidebar.title("📚 Navigazione")
-    section = st.sidebar.radio("Seleziona sezione", ["Ricerca Email", "Invio Email"])
+
+    # Se la sessione è pronta per passare direttamente all'email
+    if st.session_state.start_email_flow and st.session_state.email_json_data:
+        st.sidebar.radio("Seleziona sezione", ["Ricerca Email", "Invio Email"], index=1, key="section_choice")
+        show_email_interface(st.session_state.email_json_data)
+        return
+
+    section = st.sidebar.radio("Seleziona sezione", ["Ricerca Email", "Invio Email"], key="section_choice")
+
     if section == "Ricerca Email":
         show_scraper_interface()
     elif section == "Invio Email":
         show_email_interface()
+
 
 if __name__ == "__main__":
     main()
