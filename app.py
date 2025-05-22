@@ -265,9 +265,9 @@ def show_scraper_interface():
                     st.session_state.selected_email_idx = None
                     st.rerun()
 
-        #sezione scaricare tutti i contatti json.
+        #sezione scaricare tutti i contatti in json.
         df = pd.DataFrame(st.session_state.data_utili)
-        #st.dataframe(df, use_container_width=True)
+        #st.dataframe(df, use_container_width=True) è la tabella originale.
         json_results = df.to_json(orient="records", indent=2, force_ascii=False)
         st.download_button("📥 Scarica risultati in JSON", json_results, "risultati.json", "application/json")
 
