@@ -250,6 +250,7 @@ def show_scraper_interface():
                     st.markdown(entry["Stato"])
                 with col5:
                     if st.form_submit_button("✉️ Scrivi Email"):
+                        #st.session_state.reset_form = True  # chiedo il reset in futuro
                         st.session_state.selected_email_idx = idx
                         st.session_state.email_json_data = pd.DataFrame([entry]).to_json(orient="records", indent=2,
                                                                                          force_ascii=False)
@@ -280,13 +281,6 @@ def show_scraper_interface():
 
 def main():
     st.sidebar.title("📚 Navigazione")
-
-    # Se la sessione è pronta per passare direttamente all'email
-    if st.session_state.start_email_flow and st.session_state.email_json_data:
-        st.sidebar.radio("Seleziona sezione", ["Ricerca Email", "Invio Email"], index=1, key="section_choice")
-        show_email_interface(st.session_state.email_json_data)
-        return
-
     section = st.sidebar.radio("Seleziona sezione", ["Ricerca Email", "Invio Email"], key="section_choice")
 
     if section == "Ricerca Email":

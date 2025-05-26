@@ -30,15 +30,15 @@ def show_email_interface(json_string_data=None):
     all_emails = sender.extract_all_emails(df_json)
 
     if not all_emails:
-        st.warning("⚠️ Nessun indirizzo email trovato nel file caricato.")
+        st.warning("⚠️ Nessun indirizzo email trovato, riprovare la ricerca.")
         return
 
     name_of_the_business = df_json.iloc[0].get("Nome Azienda")
     example_site = df_json.iloc[0].get("Sito Web")
 
     # Generazione opzionale del testo AI
-    if "email_body" not in st.session_state:
-        st.session_state.email_body = ""  # inizialmente vuoto
+    #if "email_body" not in st.session_state:
+    st.session_state.email_body = ""  # inizialmente vuoto
 
     col1, col2 = st.columns([1, 2])
     with col1:
