@@ -37,6 +37,7 @@ if "email_json_data" not in st.session_state: st.session_state.email_json_data =
 if "main_search_triggered" not in st.session_state: st.session_state.main_search_triggered = False
 if "selected_email_idx" not in st.session_state: st.session_state.selected_email_idx = None
 if 'ui_visible_log_messages' not in st.session_state: st.session_state.ui_visible_log_messages = []
+if 'selected_llm_models' not in st.session_state: st.session_state.selected_llm_models = ["Gemini_Flash_2_0"]
 
 
 # --- Funzioni Helper per lo Scraping (invariate dalla tua ultima versione funzionante) ---
@@ -160,10 +161,11 @@ def extract_emails_from_url(url, unhealthy_domains_set):
     return final_emails_list, overall_piva_found, final_status.strip()
 
 
-def generate_company_list_prompt(settore, regione, dimensione, exclude_names):
+def generate_company_list_prompt(settore, regione, dimensione, exclude_names, num_results):
     exclude_str = ", ".join(exclude_names) if exclude_names else "nessuno"
+    # Modificato il prompt per includere num_results
     return (
-        f"Elenca 10 piccole aziende italiane di {settore.lower()}, <{dimensione} dipendenti, in {regione}. Includi sito web (formato: www.esempio.it o https://www.esempio.it). Evita: {exclude_str}.\nFormato: Nome - Sito\nEsempio:\nABC Formazione - www.abcformazione.it")
+        f"Elenca {num_results} piccole aziende italiane di {settore.lower()}, <{dimensione} dipendenti, in {regione}. Includi sito web (formato: www.esempio.it o https://www.esempio.it). Evita questi nomi: {exclude_str}.\nFormato: Nome - Sito\nEsempio:\nABC Formazione - www.abcformazione.it")
 
 
 def find_site_by_name(name, log_func_thread_safe):  # log_func_thread_safe è corretto
@@ -188,10 +190,16 @@ def find_site_by_name(name, log_func_thread_safe):  # log_func_thread_safe è co
     return None
 
 
+# Dizionario dei modelli LLM disponibili
+LLM_MODELS = {
+    "Gemini_Flash_2_0": call_gemini_flash,
+    # Aggiungi qui altri modelli LLM se ne hai (es. "OpenAI GPT-3.5": call_openai_gpt35)
+    # Esempio: "Altro Modello": another_llm_function,
+}
+
 def show_scraper_interface():
     st.title("🚀 Trova Clienti Superveloce")
 
-    # ... (inizializzazione logger, thread_log_lines, thread_log_lock come nel tuo file) ...
     thread_log_lines = []  # Assicurati che queste siano definite qui se non globali per la funzione
     thread_log_lock = threading.Lock()
     log_expander = st.expander("🪵 Log di Debug", expanded=False)
@@ -226,6 +234,16 @@ def show_scraper_interface():
                                          key="dimensione_input_widget")
             max_results = st.slider("Risultati Desiderati", 5, 100, st.session_state.get("max_results_input", 10),
                                     key="max_results_input_widget")
+
+        # Nuovo selettore per i modelli LLM
+        selected_llm_models = st.multiselect(
+            "Seleziona modelli LLM da usare",
+            list(LLM_MODELS.keys()),
+            default=st.session_state.get("selected_llm_models", ["Gemini_Flash_2_0"]),
+            key="llm_models_selector"
+        )
+        st.session_state.selected_llm_models = selected_llm_models
+
         main_search_button_clicked = st.form_submit_button("⚡ Cerca Clienti Ora!")
 
     # --- Logica di Azione basata sui Pulsanti (come nel tuo file) ---
@@ -253,6 +271,9 @@ def show_scraper_interface():
 
         unhealthy_domains_for_run = set()
         main_thread_ui_logger(f"Avvio ricerca: {st.session_state.settore_input}, {st.session_state.regione_input}...")
+        if not st.session_state.selected_llm_models:
+            st.warning("Nessun modello LLM selezionato. Selezionane almeno uno per avviare la ricerca.")
+            return
 
         processed_identifiers = set()
         progress_bar_placeholder = st.empty()
@@ -267,20 +288,29 @@ def show_scraper_interface():
 
             excluded_names = {name for name, _ in processed_identifiers}
             prompt = generate_company_list_prompt(st.session_state.settore_input, st.session_state.regione_input,
-                                                  st.session_state.dimensione_input, list(excluded_names))
+                                                  st.session_state.dimensione_input, list(excluded_names),
+                                                  st.session_state.max_results_input)  # Passa max_results_input
 
-            try:
-                output_llm = call_gemini_flash(prompt)
-            except Exception as e:
-                main_thread_ui_logger(f"⛔ Errore LLM: {e}.");
-                st.error(f"Errore LLM: {e}");
-                break
-            if not output_llm or not output_llm.strip(): main_thread_ui_logger("⚠️ LLM output vuoto."); time.sleep(
+            combined_llm_output = ""
+            for model_name in st.session_state.selected_llm_models:
+                llm_function = LLM_MODELS.get(model_name)
+                if llm_function:
+                    try:
+                        output_llm = llm_function(prompt)
+                        main_thread_ui_logger(
+                            f"Debug LLM '{model_name}': Output ricevuto. Lunghezza: {len(output_llm) if output_llm else 0} caratteri.")
+                        combined_llm_output += (output_llm if output_llm else "") + "\n"
+                    except Exception as e:
+                        main_thread_ui_logger(f"⛔ Errore LLM '{model_name}': {e}.")
+                else:
+                    main_thread_ui_logger(f"⚠️ Modello LLM '{model_name}' non trovato o non implementato.")
+
+            if not combined_llm_output.strip(): main_thread_ui_logger("⚠️ Output combinato LLM vuoto."); time.sleep(
                 0.5); continue
 
             companies_from_llm = []
             # SEZIONE PARSING LLM (ESATTAMENTE COME NEL TUO app.py FORNITO)
-            for line in output_llm.strip().splitlines():
+            for line in combined_llm_output.strip().splitlines():
                 line = line.strip();
                 name, site_str = None, None
                 if not line or line.startswith(
@@ -316,7 +346,8 @@ def show_scraper_interface():
                             (name, site_str)); processed_identifiers.add(identifier)
                     except Exception:
                         pass
-                if len(companies_from_llm) >= 10: break
+                if len(
+                    companies_from_llm) >= st.session_state.max_results_input + 5: break  # Un po' di margine per il parsing
             # FINE SEZIONE PARSING LLM
 
             if not companies_from_llm:
@@ -326,11 +357,8 @@ def show_scraper_interface():
             if no_new_company_batches >= 3: main_thread_ui_logger("⚠️ Stallo LLM."); break
             if not companies_from_llm: time.sleep(0.5); continue
 
-            # !!!!!!!!!! CORREZIONE QUI !!!!!!!!!!!
             # Inizializza batch_utili e batch_scartati per ogni nuovo batch di aziende LLM
             batch_utili, batch_scartati = [], []
-
-            # !!!!!!!!!! FINE CORREZIONE !!!!!!!!!!!
 
             def process_company_thread(name_c, url_c, log_f, unh_set):
                 emails, p_iva, status = extract_emails_from_url(url_c, unh_set)
@@ -445,6 +473,7 @@ def show_scraper_interface():
             st.download_button("📥 Scarti (JSON)", json_scarti,
                                f"clienti_scartati_{st.session_state.get('settore_input', 'na')}_{st.session_state.get('regione_input', 'na')}.json",
                                "application/json")
+
 
 def main():
     st.sidebar.title("📚 Navigazione")
