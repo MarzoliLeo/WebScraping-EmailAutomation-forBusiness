@@ -4,7 +4,6 @@ import pandas as pd
 import json
 from email_sender import EmailSender
 
-
 def show_email_interface(json_string_data=None):
     st.header("📧 Invia Email ai Contatti")
 
@@ -36,9 +35,8 @@ def show_email_interface(json_string_data=None):
     name_of_the_business = df_json.iloc[0].get("Nome Azienda")
     example_site = df_json.iloc[0].get("Sito Web")
 
-    # Generazione opzionale del testo AI
-    #if "email_body" not in st.session_state:
-    st.session_state.email_body = ""  # inizialmente vuoto
+    if "email_body" not in st.session_state:
+        st.session_state.email_body = ""
 
     col1, col2 = st.columns([1, 2])
     with col1:
@@ -50,7 +48,6 @@ def show_email_interface(json_string_data=None):
 
     st.markdown("---")
 
-    # Il form è SEMPRE visibile
     with st.form("email_form", clear_on_submit=False):
         subject = st.text_input(
             "Oggetto",
@@ -69,7 +66,8 @@ def show_email_interface(json_string_data=None):
             with st.spinner("📤 Invio email in corso..."):
                 results = []
                 for email in all_emails:
-                    success, status = sender.send_email(email, subject, message)
+                    # Pass the company name for tracking
+                    success, status = sender.send_email(email, subject, message, name_of_the_business)
                     results.append((email, status))
 
             st.success("✅ Invio completato")

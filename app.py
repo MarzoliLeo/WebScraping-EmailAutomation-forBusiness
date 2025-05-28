@@ -11,9 +11,10 @@ import requests
 
 from utils import clean_valid_emails, EMAIL_CANDIDATE_REGEX, PRIORITY_KEYWORDS
 from utils_llm import call_gemini_flash
-# Assicurati che show_email_interface sia correttamente importato da email_ui
 from email_ui import show_email_interface
 from googlesearch import search
+from tracking_ui import EmailTrackerUI
+
 
 st.set_page_config(page_title="Trova Clienti", layout="wide")
 
@@ -163,7 +164,6 @@ def extract_emails_from_url(url, unhealthy_domains_set):
 
 def generate_company_list_prompt(settore, regione, dimensione, exclude_names, num_results):
     exclude_str = ", ".join(exclude_names) if exclude_names else "nessuno"
-    # Modificato il prompt per includere num_results
     return (
         f"Elenca {num_results} piccole aziende italiane di {settore.lower()}, <{dimensione} dipendenti, in {regione}. Includi sito web (formato: www.esempio.it o https://www.esempio.it). Evita questi nomi: {exclude_str}.\nFormato: Nome - Sito\nEsempio:\nABC Formazione - www.abcformazione.it")
 
@@ -200,7 +200,7 @@ LLM_MODELS = {
 def show_scraper_interface():
     st.title("🚀 Trova Clienti Superveloce")
 
-    thread_log_lines = []  # Assicurati che queste siano definite qui se non globali per la funzione
+    thread_log_lines = []
     thread_log_lock = threading.Lock()
     log_expander = st.expander("🪵 Log di Debug", expanded=False)
     log_container = log_expander.empty()
@@ -221,7 +221,6 @@ def show_scraper_interface():
         with thread_log_lock: thread_log_lines.append(timestamped_message)
         print(timestamped_message)
 
-    # --- Form di Ricerca Principale (come nel tuo file) ---
     with st.form(key="filtro_form"):
         c1, c2 = st.columns(2)
         with c1:
@@ -235,7 +234,6 @@ def show_scraper_interface():
             max_results = st.slider("Risultati Desiderati", 5, 100, st.session_state.get("max_results_input", 10),
                                     key="max_results_input_widget")
 
-        # Nuovo selettore per i modelli LLM
         selected_llm_models = st.multiselect(
             "Seleziona modelli LLM da usare",
             list(LLM_MODELS.keys()),
@@ -246,7 +244,6 @@ def show_scraper_interface():
 
         main_search_button_clicked = st.form_submit_button("⚡ Cerca Clienti Ora!")
 
-    # --- Logica di Azione basata sui Pulsanti (come nel tuo file) ---
     if main_search_button_clicked:
         st.session_state.settore_input = settore
         st.session_state.regione_input = regione
@@ -257,7 +254,6 @@ def show_scraper_interface():
         st.session_state.email_json_data = None
         st.rerun()
 
-    # Esegui la ricerca se il flag è impostato (come nel tuo file)
     if st.session_state.get("main_search_triggered", False):
         st.session_state.main_search_triggered = False
 
@@ -289,7 +285,7 @@ def show_scraper_interface():
             excluded_names = {name for name, _ in processed_identifiers}
             prompt = generate_company_list_prompt(st.session_state.settore_input, st.session_state.regione_input,
                                                   st.session_state.dimensione_input, list(excluded_names),
-                                                  st.session_state.max_results_input)  # Passa max_results_input
+                                                  st.session_state.max_results_input)
 
             combined_llm_output = ""
             for model_name in st.session_state.selected_llm_models:
@@ -305,11 +301,10 @@ def show_scraper_interface():
                 else:
                     main_thread_ui_logger(f"⚠️ Modello LLM '{model_name}' non trovato o non implementato.")
 
-            if not combined_llm_output.strip(): main_thread_ui_logger("⚠️ Output combinato LLM vuoto."); time.sleep(
-                0.5); continue
+
+            if not combined_llm_output.strip(): main_thread_ui_logger("⚠️ Output combinato LLM vuoto."); time.sleep(0.5); continue
 
             companies_from_llm = []
-            # SEZIONE PARSING LLM (ESATTAMENTE COME NEL TUO app.py FORNITO)
             for line in combined_llm_output.strip().splitlines():
                 line = line.strip();
                 name, site_str = None, None
@@ -346,9 +341,7 @@ def show_scraper_interface():
                             (name, site_str)); processed_identifiers.add(identifier)
                     except Exception:
                         pass
-                if len(
-                    companies_from_llm) >= st.session_state.max_results_input + 5: break  # Un po' di margine per il parsing
-            # FINE SEZIONE PARSING LLM
+                if len(companies_from_llm) >= st.session_state.max_results_input + 5: break # Un po' di margine per il parsing
 
             if not companies_from_llm:
                 no_new_company_batches += 1
@@ -357,12 +350,10 @@ def show_scraper_interface():
             if no_new_company_batches >= 3: main_thread_ui_logger("⚠️ Stallo LLM."); break
             if not companies_from_llm: time.sleep(0.5); continue
 
-            # Inizializza batch_utili e batch_scartati per ogni nuovo batch di aziende LLM
             batch_utili, batch_scartati = [], []
 
             def process_company_thread(name_c, url_c, log_f, unh_set):
                 emails, p_iva, status = extract_emails_from_url(url_c, unh_set)
-                # Filtro: Email è mandatoria per "utile"
                 useful = bool(emails)
                 res = {"Nome Azienda": name_c, "Sito Web": urlparse(url_c).netloc.lower().replace("www.", ""),
                        "Email trovate": ", ".join(emails) if emails else "Nessuna",
@@ -387,12 +378,10 @@ def show_scraper_interface():
                                  "P.IVA Trovata": "ERR",
                                  "Stato": f"Exc: {type(e_thr).__name__}"};
                         was_u = False
-                    # Qui batch_utili e batch_scartati vengono popolati
                     if r_res: (batch_utili if was_u else batch_scartati).append(r_res)
 
-                    # Qui batch_utili e batch_scartati vengono usati
             if batch_utili: st.session_state.data_utili.extend(batch_utili)
-            if batch_scartati: st.session_state.data_scartati.extend(batch_scartati)  # Questa era la riga dell'errore
+            if batch_scartati: st.session_state.data_scartati.extend(batch_scartati)
 
             prog = min(1.0,
                        len(st.session_state.data_utili) / st.session_state.max_results_input if st.session_state.max_results_input > 0 else 0)
@@ -411,7 +400,6 @@ def show_scraper_interface():
         if 'ui_visible_log_messages' in st.session_state: log_container.markdown(
             "\n".join(st.session_state.ui_visible_log_messages[-75:]), unsafe_allow_html=True)
 
-    # --- Visualizzazione Risultati ---
     if st.session_state.data_utili:
         st.success(f"✅ Risultati Utilizzabili ({len(st.session_state.data_utili)})")
 
@@ -424,7 +412,6 @@ def show_scraper_interface():
             with col1:
                 st.markdown(f"**{entry['Nome Azienda']}**")
             with col2:
-                # Link cliccabile
                 site_domain = entry["Sito Web"]
                 if site_domain and site_domain not in ["N/A", "ERR", "ERRORE"]:
                     link_url = f"https://{site_domain}"
@@ -482,7 +469,7 @@ def main():
 
     section = st.sidebar.radio(
         "Seleziona sezione",
-        ["Ricerca Email", "Invio Email"],
+        ["Ricerca Email", "Invio Email", "Tracciamento Email"],
         key="main_section_choice",
         horizontal=True
     )
@@ -492,6 +479,9 @@ def main():
     elif section == "Invio Email":
         st.subheader("Modulo Invio Email Globale")
         show_email_interface(st.session_state.get("email_json_data", None))
+    elif section == "Tracciamento Email":
+        email_tracker_ui = EmailTrackerUI()
+        email_tracker_ui.show_interface()
 
 
 if __name__ == "__main__":
