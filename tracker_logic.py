@@ -8,7 +8,7 @@ from urllib.parse import quote_plus  # Importa per codificare l'URL
 FLASK_TRACKER_BASE_URL = "http://127.0.0.1:5000"
 
 
-def generate_tracking_pixel(recipient_email, company_name):
+def generate_tracking_logic(recipient_email, company_name):
     """
     Genera un URL di tracking pixel unico e registra l'email con il server Flask.
     """

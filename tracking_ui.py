@@ -16,7 +16,7 @@ class EmailTrackerUI:
     def show_interface(self):
         st.header("📊 Stato Apertura Email (Tramite Click)")  # Aggiorna il titolo
 
-        refresh_interval_seconds = 10
+        refresh_interval_seconds = 3
         current_time = time.time()
 
         if st.button("🔄 Aggiorna Dati Tracciamento"):
