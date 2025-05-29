@@ -1,19 +1,19 @@
-# email_sender.py
+# email_sender.py - Versione AGGIORNATA per tracciamento risposte (HTML invisibile)
 import json
 import base64
-from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import uuid
-import re # Importa il modulo re per le espressioni regolari
+import re
 from gemini_api import call_gemini_flash
 from tracker_logic import generate_tracking_logic, generate_tracked_link
+from gmail_config import get_gmail_service
 
 
 class EmailSender:
     def __init__(self):
-        pass
+        self.gmail_service = get_gmail_service()
 
     def extract_all_emails(self, df):
         all_emails = []
@@ -36,8 +36,7 @@ class EmailSender:
 
     def send_email(self, to, subject, message_text, company_name):
         try:
-            creds = Credentials.from_authorized_user_file("token.json", ["https://www.googleapis.com/auth/gmail.send"])
-            service = build("gmail", "v1", credentials=creds)
+            service = self.gmail_service
 
             msg = MIMEMultipart("alternative")
             msg["to"] = to
@@ -52,68 +51,47 @@ class EmailSender:
                 tracking_id, _ = tracking_result
 
             original_website_url = "https://www.metaphoralab.it/"
-            tracked_url_html = "" # Inizializza a vuoto
+            tracked_url_html = ""
 
-            # --- LOGICA PER IL LINK TRACCIATO INTELLIGENTE ---
-            # 1. Cerca l'URL originale nel message_text
-            # Usiamo re.escape per gestire correttamente i caratteri speciali nell'URL se necessario
-            # e re.IGNORECASE per una ricerca case-insensitive.
-            # Il pattern cerca l'URL intero.
             if tracking_id:
-                # Pattern per trovare l'URL sia con che senza 'http(s)://'
-                # Questo pattern è più robusto se l'AI o l'utente scrive l'URL in modi leggermente diversi
                 url_pattern = re.compile(r'(https?://)?(www\.)?metaphoralab\.it/?', re.IGNORECASE)
-
-                # Cerca l'URL nel message_text
                 match = url_pattern.search(message_text)
 
                 if match:
-                    # Se l'URL è trovato, sostituiscilo con il link tracciato nel formatted_message_html
-                    # Non aggiungiamo tracked_website_link_html separatamente in questo caso
                     tracked_full_url = generate_tracked_link(tracking_id, original_website_url)
-                    # Sostituisci l'URL originale nel testo con il link HTML tracciato
-                    # Usiamo match.group(0) per ottenere la stringa esatta trovata dal pattern
-                    # Non creiamo un <p> qui, perché formatted_message_html lo farà per noi.
                     link_replacement = f'<a href="{tracked_full_url}" target="_blank">https://metaphora.it</a>'
-                    # Questo è il testo che verrà passato per la formattazione HTML.
-                    # message_text_for_html si aggiorna con il link HTML.
-                    message_text_for_html = url_pattern.sub(link_replacement, message_text, 1) # Sostituisci solo la prima occorrenza
+                    message_text_for_html = url_pattern.sub(link_replacement, message_text, 1)
                 else:
-                    # Se l'URL non è presente nel testo, aggiungilo in fondo come prima
-                    # e imposta message_text_for_html al message_text originale.
                     tracked_full_url = generate_tracked_link(tracking_id, original_website_url)
                     tracked_website_link_html = f'<p>Visita il nostro sito: <a href="{tracked_full_url}" target="_blank">https://metaphora.it</a></p>'
-                    message_text_for_html = message_text # Usa il testo originale per la formattazione
+                    message_text_for_html = message_text
             else:
-                # Se non c'è tracking_id, non c'è link tracciato, usa il testo originale
                 message_text_for_html = message_text
-            # --- FINE LOGICA LINK TRACCIATO INTELLIGENTE ---
 
+            formatted_message_html = message_text_for_html.replace("\r\n", "\n").replace("\n\n", "</p><p>").replace(
+                "\n", "<br>")
+            formatted_message_html = f"<p>{formatted_message_html}</p>"
 
-            # Sostituisci le nuove righe singole con <br> per interruzioni di riga
-            # Sostituisci doppie nuove righe (o più) con </p><p> per creare nuovi paragrafi
-            # Applica la formattazione a message_text_for_html (che ora contiene il link HTML se trovato e sostituito)
-            formatted_message_html = message_text_for_html.replace("\r\n", "\n").replace("\n\n", "</p><p>").replace("\n", "<br>")
-            formatted_message_html = f"<p>{formatted_message_html}</p>" # Avvolgi tutto in un <p>
-
-            # Prepara la versione HTML del messaggio completo
-            # Aggiungi tracked_website_link_html solo se non è stato già inserito nel formatted_message_html
             final_html_content = formatted_message_html
-            if not match and tracked_website_link_html: # Se non c'è stata una sostituzione e il link dovrebbe essere aggiunto
+            if tracking_id and not match and 'tracked_website_link_html' in locals() and tracked_website_link_html:
                 final_html_content += tracked_website_link_html
 
-
-            html_message = f"""
+            # *** CORREZIONE QUI: INSERIMENTO DEL TRACKING_ID COME COMMENTO HTML INVISIBILE ***
+            # Questa parte è stata riordinata e corretta per assicurare che il tracking_id sia SEMPRE presente
+            # nell'HTML, se generato.
+            html_message_with_tracking = f"""
             <html>
                 <body>
                     {final_html_content}
-                </body>
+                    <p style="display: none;">{tracking_id}</p>
+                    </body>
             </html>
             """
-            plain_message = message_text
 
-            msg.attach(MIMEText(plain_message, "plain", "utf-8"))
-            msg.attach(MIMEText(html_message, "html", "utf-8"))
+            # Allega sia la versione plain che quella HTML.
+            # La versione HTML includerà il commento con il tracking_id.
+            msg.attach(MIMEText(formatted_message_html, "plain", "utf-8"))
+            msg.attach(MIMEText(html_message_with_tracking, "html", "utf-8"))
 
             raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode()
             result = service.users().messages().send(userId="me", body={"raw": raw_message}).execute()
