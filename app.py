@@ -483,6 +483,12 @@ def main():
         email_tracker_ui = EmailTrackerUI()
         email_tracker_ui.show_interface()
 
+    # --- LOGICA DI AUTO-REFRESH GLOBALE ---
+    # Questo è il cuore dell'auto-refresh continuo.
+    if section == "Tracciamento Email":
+        time.sleep(3)  # Attende 3 secondi prima di ri-eseguire lo script
+        st.rerun()  # Forza il ricaricamento dell'intera app Streamlit
+
 
 if __name__ == "__main__":
     main()
