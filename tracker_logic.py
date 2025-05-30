@@ -4,8 +4,6 @@ import time
 import requests
 import streamlit as st
 from urllib.parse import quote_plus
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
 import base64
 import re
 from datetime import datetime, timedelta, timezone
