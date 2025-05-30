@@ -12,7 +12,6 @@ FLASK_TRACKER_BASE_URL = "http://127.0.0.1:5000"
 
 from gmail_config import get_gmail_service
 
-
 def generate_tracking_logic(recipient_email, company_name):
     """
     Genera un URL di tracking pixel unico e registra l'email con il server Flask.
