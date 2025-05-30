@@ -2,13 +2,24 @@ import os
 import logging
 from google import genai
 from google.genai import types
+from dotenv import load_dotenv
 
+load_dotenv() #Looks for the .env file in the files of the project.
 
 # CONFIGURA LOGGING SU STDERR A LIVELLO DEBUG
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s %(message)s")  # :contentReference[oaicite:0]{index=0}
 
-# Inizializzazione
-client = genai.Client(api_key="AIzaSyBzY3R-z4s5VgEiTURI11od-b-DpWaAdYM") #Gemini API Key
+# Recupera la chiave API da una variabile d'ambiente
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+
+if not GEMINI_API_KEY:
+    logging.error("La chiave API di Gemini non è stata trovata. Assicurati di averla impostata come variabile d'ambiente 'GEMINI_API_KEY'.")
+    raise ValueError("GEMINI_API_KEY non impostata.")
+
+client = genai.Client(api_key=GEMINI_API_KEY)
+
+
 
 def call_gemini_flash(prompt):
     response = client.models.generate_content(
