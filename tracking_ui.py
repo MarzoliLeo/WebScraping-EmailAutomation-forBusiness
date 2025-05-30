@@ -113,7 +113,7 @@ class EmailTrackerUI:
             status_counts.columns = ['Stato', 'Conteggio']
             color_map = {
                 "Aperta": '#2ca02c',
-                "Risposta": '#ff7f0e',
+                "Risposta": '#00ffcc',
                 "Rimbalzata": '#d62728',
                 "Inviata": '#1f77b4'
             }
