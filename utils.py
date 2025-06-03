@@ -1,7 +1,7 @@
 # utils.py
 import re
 from email_validator import validate_email, EmailNotValidError
-from llama_cpp import Llama
+#[Vecchio modello] from llama_cpp import Llama
 
 EMAIL_CANDIDATE_REGEX = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"
 _llm = None
@@ -31,8 +31,10 @@ def clean_valid_emails(emails):
             continue
     return list(set(valid_emails))
 
+"""
 def get_llm():
     global _llm
     if _llm is None:
         _llm = Llama(model_path="models/mistral-7b-instruct-v0.1.Q4_K_M.gguf", n_ctx=2048, n_threads=4)
     return _llm
+"""
