@@ -1,3 +1,4 @@
+# app.py (l'app Streamlit principale)
 import streamlit as st
 import pandas as pd
 from urllib.parse import urlparse, urljoin
@@ -7,16 +8,20 @@ import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import time
-import requests
+import requests # Importa requests
+import json # Importa json
 
 from utils import clean_valid_emails, EMAIL_CANDIDATE_REGEX, PRIORITY_KEYWORDS
+# Assicurati che utils_llm.py sia corretto e non contenga chiavi API hardcoded
 from utils_llm import call_gemini_flash
 from email_ui import show_email_interface
 from googlesearch import search
 from tracking_ui import EmailTrackerUI
 
-
 st.set_page_config(page_title="Trova Clienti", layout="wide")
+
+# URL del server Flask deployato su PythonAnywhere
+FLASK_SERVER_BASE_URL = "https://marzoli95.pythonanywhere.com"
 
 PARTITA_IVA_REGEX = r"\b(IT)?\s?\d{11}\b"
 HEADERS = {
@@ -40,8 +45,28 @@ if "selected_email_idx" not in st.session_state: st.session_state.selected_email
 if 'ui_visible_log_messages' not in st.session_state: st.session_state.ui_visible_log_messages = []
 if 'selected_llm_models' not in st.session_state: st.session_state.selected_llm_models = ["Gemini_Flash_2_0"]
 
+# Nuovo stato di sessione per l'utente autenticato
+if 'authenticated_user_email' not in st.session_state:
+    st.session_state.authenticated_user_email = None
+
+# --- Gestione del callback OAuth ---
+query_params = st.query_params
+if query_params:
+    if "auth_status" in query_params:
+        if query_params["auth_status"] == "success":
+            st.session_state.authenticated_user_email = query_params.get("user_email")
+            st.success(f"✅ Autenticazione Gmail riuscita per: {st.session_state.authenticated_user_email}")
+            # Pulisci i query params per evitare di ri-autenticare al refresh
+            st.query_params.clear() # Rimuovi i parametri dalla URL
+            st.rerun() # Ricarica per pulire l'URL
+        elif query_params["auth_status"] == "failure":
+            error_message = query_params.get("error", "Errore sconosciuto.")
+            st.error(f"❌ Autenticazione Gmail fallita: {error_message}")
+            st.query_params.clear()
+            st.rerun()
 
 # --- Funzioni Helper per lo Scraping (invariate dalla tua ultima versione funzionante) ---
+# ... (le tue funzioni get_with_retries, extract_emails_and_piva, try_common_contact_pages, extract_emails_from_url, generate_company_list_prompt, find_site_by_name) ...
 def get_with_retries(url, unhealthy_domains_set, max_retries=2, timeout=8, backoff_factor=0.3):
     if not scraper: raise Exception("Scraper non inizializzato.")
     try:
@@ -188,7 +213,6 @@ def find_site_by_name(name, log_func_thread_safe):  # log_func_thread_safe è co
     except Exception as e:  # Variabile 'e' generica per l'eccezione principale della funzione
         log_func_thread_safe(f"Err Google '{name}': {e}")
     return None
-
 
 # Dizionario dei modelli LLM disponibili
 LLM_MODELS = {
@@ -461,11 +485,24 @@ def show_scraper_interface():
                                f"clienti_scartati_{st.session_state.get('settore_input', 'na')}_{st.session_state.get('regione_input', 'na')}.json",
                                "application/json")
 
-
 def main():
     st.sidebar.title("📚 Navigazione")
     if 'main_section_choice' not in st.session_state:
         st.session_state.main_section_choice = "Ricerca Email"
+
+    # --- LOGIN/LOGOUT Gmail ---
+    if st.session_state.authenticated_user_email:
+        st.sidebar.success(f"Connesso come: {st.session_state.authenticated_user_email}")
+        if st.sidebar.button("Logout Gmail"):
+            st.session_state.authenticated_user_email = None
+            st.info("Disconnesso da Gmail.")
+            st.rerun()
+    else:
+        st.sidebar.warning("Non connesso a Gmail.")
+        # Link al server Flask per avviare il flusso OAuth
+        oauth_url = f"{FLASK_SERVER_BASE_URL}/authorize_gmail"
+        st.sidebar.markdown(f"[Login con Gmail]({oauth_url})", unsafe_allow_html=True)
+        st.sidebar.info("Clicca per autorizzare l'applicazione a inviare email dal tuo account Gmail.")
 
     section = st.sidebar.radio(
         "Seleziona sezione",
@@ -477,14 +514,16 @@ def main():
     if section == "Ricerca Email":
         show_scraper_interface()
     elif section == "Invio Email":
-        st.subheader("Modulo Invio Email Globale")
-        show_email_interface(st.session_state.get("email_json_data", None))
+        if st.session_state.authenticated_user_email:
+            st.subheader("Modulo Invio Email Globale")
+            show_email_interface(st.session_state.get("email_json_data", None))
+        else:
+            st.warning("Per inviare email, devi prima autenticarti con il tuo account Gmail.")
     elif section == "Tracciamento Email":
         email_tracker_ui = EmailTrackerUI()
         email_tracker_ui.show_interface()
 
     # --- LOGICA DI AUTO-REFRESH GLOBALE ---
-    # Questo è il cuore dell'auto-refresh continuo.
     if section == "Tracciamento Email":
         time.sleep(3)  # Attende 3 secondi prima di ri-eseguire lo script
         st.rerun()  # Forza il ricaricamento dell'intera app Streamlit

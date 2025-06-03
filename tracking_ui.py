@@ -1,9 +1,19 @@
-# tracker_ui.py
+# tracking_ui.py (AGGIORNATO)
 import streamlit as st
 import pandas as pd
-from tracker_logic import get_tracking_status, check_for_replies_and_bounces
 import time
 import plotly.express as px
+import requests # Importa requests
+
+# Modifica per puntare all'URL del server Flask su PythonAnywhere
+FLASK_TRACKER_BASE_URL = "[https://marzoli95.pythonanywhere.com](https://marzoli95.pythonanywhere.com)"
+
+# La funzione get_tracking_status e generate_tracked_link sono importate da tracker_logic
+# e già usano FLASK_TRACKER_BASE_URL, quindi non necessitano modifiche qui.
+from tracker_logic import get_tracking_status
+
+# Non importare più check_for_replies_and_bounces direttamente qui
+# from tracker_logic import check_for_replies_and_bounces
 
 
 class EmailTrackerUI:
@@ -20,17 +30,26 @@ class EmailTrackerUI:
         st.header("📊 Stato Apertura Email (Tramite Click)")
 
         # Controllo periodico per risposte e rimbalzi (meno frequente dell'UI refresh)
+        # Questa chiamata ora DEVE essere fatta al server Flask
         gmail_check_interval_seconds = 60 # Controlla Gmail ogni 60 secondi
         current_time_for_gmail_check = time.time()
         if (current_time_for_gmail_check - st.session_state.last_gmail_check_time) > gmail_check_interval_seconds:
             st.session_state.last_gmail_check_time = current_time_for_gmail_check
-            print(f"[{time.strftime('%H:%M:%S')}] Eseguo controllo risposte e rimbalzi da Gmail...")
-            check_for_replies_and_bounces()
-            # Non chiamiamo st.rerun() qui, verrà gestito dal ciclo principale di Streamlit
-            # Questo evita un doppio rerun se la UI si aggiorna già frequentemente.
+            print(f"[{time.strftime('%H:%M:%S')}] Eseguo controllo risposte e rimbalzi da Gmail (tramite server Flask)...")
 
+            # Esegui la richiesta al server Flask per controllare le email
+            user_email = st.session_state.get("authenticated_user_email")
+            if user_email:
+                try:
+                    response = requests.post(f"{FLASK_TRACKER_BASE_URL}/check_gmail_status_for_user", json={"user_email": user_email})
+                    response.raise_for_status()
+                    print(f"Server Flask ha controllato le email per {user_email}: {response.json().get('message')}")
+                except requests.exceptions.RequestException as e:
+                    st.error(f"Errore nel richiedere il controllo email al server Flask: {e}")
+            else:
+                st.warning("Nessun utente autenticato. Il controllo delle risposte/rimbalzi di Gmail non può essere eseguito.")
 
-        tracking_data = get_tracking_status()
+        tracking_data = get_tracking_status() # Questa funzione chiama già il Flask server
 
         # Processa e aggiungi nuovi eventi al log
         self._process_and_update_logs(tracking_data)
@@ -88,7 +107,7 @@ class EmailTrackerUI:
                 df_tracking["Ora Rimbalzo"] = df_tracking["Ora Rimbalzo"].dt.strftime('%Y-%m-%d %H:%M:%S').fillna("N/A")
 
 
-        # --- Dashboard Statistiche ---
+        # --- Dashboard Statistiche --- (invariata)
         st.subheader("Statistiche Generali")
         total_sent = len(df_tracking)
         total_opened = df_tracking[df_tracking["Stato"] == "Aperta"].shape[0]
@@ -127,7 +146,7 @@ class EmailTrackerUI:
             st.info("Nessun dato per il grafico a torta.")
 
 
-        # --- Riepilogo Dettagliato ---
+        # --- Riepilogo Dettagliato --- (invariato)
         st.markdown("---")
         st.subheader("📬 Riepilogo Dettagliato")
 
@@ -163,7 +182,7 @@ class EmailTrackerUI:
         else:
             st.info("Tutte le email inviate hanno uno stato finale (aperta, risposta, rimbalzata).")
 
-        # --- Log Eventi Recenti ---
+        # --- Log Eventi Recenti --- (invariato)
         st.markdown("---")
         st.subheader("📝 Log Eventi Recenti")
 
