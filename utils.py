@@ -8,8 +8,6 @@ _llm = None
 
 PRIORITY_KEYWORDS = ["hr", "risorse", "human", "info", "lavoro"]
 
-from email_validator import validate_email, EmailNotValidError
-
 def clean_valid_emails(emails):
     valid_emails = []
     pec_keywords = ["pec", "postacert", "legalmail", ".gov", ".giustizia"]
