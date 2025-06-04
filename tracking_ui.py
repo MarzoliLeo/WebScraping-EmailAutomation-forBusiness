@@ -146,7 +146,7 @@ class EmailTrackerUI:
             st.info("Nessun dato per il grafico a torta.")
 
 
-        # --- Riepilogo Dettagliato --- (invariato)
+        # --- Riepilogo Dettagliato --- (invariata)
         st.markdown("---")
         st.subheader("📬 Riepilogo Dettagliato")
 
