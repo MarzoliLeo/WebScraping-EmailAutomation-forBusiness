@@ -1,15 +1,14 @@
 # app.py (l'app Streamlit principale)
 import streamlit as st
 import pandas as pd
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, parse_qs
 import cloudscraper
 from bs4 import BeautifulSoup
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import time
-import requests # Importa requests
-import json # Importa json
+import requests
 
 from utils import clean_valid_emails, EMAIL_CANDIDATE_REGEX, PRIORITY_KEYWORDS
 # Assicurati che utils_llm.py sia corretto e non contenga chiavi API hardcoded
@@ -45,50 +44,21 @@ if "selected_email_idx" not in st.session_state: st.session_state.selected_email
 if 'ui_visible_log_messages' not in st.session_state: st.session_state.ui_visible_log_messages = []
 if 'selected_llm_models' not in st.session_state: st.session_state.selected_llm_models = ["Gemini_Flash_2_0"]
 
-# Nuovo stato di sessione per l'utente autenticato
+# New session state variable for authenticated user email
 if 'authenticated_user_email' not in st.session_state:
     st.session_state.authenticated_user_email = None
 
-# --- GESTIONE DEL CALLBACK OAUTH (Migliorata) ---
-# Leggi i parametri una sola volta all'inizio del run dello script
-current_query_params = st.query_params
-
-# Controlla se abbiamo ricevuto un callback di autenticazione
-if "auth_status" in current_query_params:
-    auth_status = current_query_params.get("auth_status")
-    user_email_from_query = current_query_params.get("user_email")
-    error_message_from_query = current_query_params.get("error", "Errore sconosciuto.")
-
-    if auth_status == "success":
-        st.session_state.authenticated_user_email = user_email_from_query
-        # Mostra il messaggio di successo solo la prima volta
-        if "auth_success_shown" not in st.session_state:
-            st.success(f"✅ Autenticazione Gmail riuscita per: {st.session_state.authenticated_user_email}")
-            st.session_state.auth_success_shown = True
-
-        print(f"[{time.strftime('%H:%M:%S')}] Streamlit App - OAuth success. User: {user_email_from_query}")
-    elif auth_status == "failure":
-        st.session_state.authenticated_user_email = None
-        if "auth_failure_shown" not in st.session_state:
-            st.error(f"❌ Autenticazione Gmail fallita: {error_message_from_query}")
-            st.session_state.auth_failure_shown = True
-
-        print(f"[{time.strftime('%H:%M:%S')}] Streamlit App - OAuth failure: {error_message_from_query}")
-
-    # IMPORTANTE: Dopo aver processato i parametri, PULISCI L'URL e RERUN
-    # Questo assicura che i parametri non rimangano nell'URL dopo la prima elaborazione,
-    # prevenendo loop o comportamenti indesiderati al refresh.
-    # Non usare st.query_params.clear() qui se non vuoi che Streamlit non rilegge
-    # i parametri al prossimo run. Invece, usa history.replaceState o un reindirizzamento.
-    # Ma per Streamlit Cloud, st.experimental_rerun() è spesso l'approccio più semplice.
-    # Se st.query_params.clear() da problemi, si potrebbe provare a non usarlo o a usarlo
-    # in modo più condizionale.
-
-    # Qui, l'idea è che dopo aver processato il callback, l'URL venga pulito.
-    # Il rerunning dovrebbe garantire che il session_state sia aggiornato.
-    if st.query_params:  # Se ci sono ancora query params (non sono stati già puliti da un rerun precedente)
-        st.query_params.clear()
-        st.rerun()  # Forza un rerun con URL pulito
+# --- Handle OAuth2 Callback from Flask Server ---
+query_params = st.query_params
+if "auth_status" in query_params:
+    if query_params["auth_status"] == "success":
+        st.session_state.authenticated_user_email = query_params.get("user_email")
+        st.success(f"Autenticazione Gmail completata per: {st.session_state.authenticated_user_email}")
+    else:
+        error_message = query_params.get("error", "Errore sconosciuto.")
+        st.error(f"Autenticazione Gmail fallita: {error_message}")
+    # Clear query parameters to prevent re-processing on refresh
+    st.query_params.clear() # This clears the URL parameters in the browser
 
 # --- Funzioni Helper per lo Scraping (invariate dalla tua ultima versione funzionante) ---
 def get_with_retries(url, unhealthy_domains_set, max_retries=2, timeout=8, backoff_factor=0.3):
@@ -511,27 +481,8 @@ def show_scraper_interface():
 
 def main():
     st.sidebar.title("📚 Navigazione")
-    # Non inizializzare main_section_choice qui, perché potrebbe resettare
-    # se non è già nello session_state.
     if 'main_section_choice' not in st.session_state:
         st.session_state.main_section_choice = "Ricerca Email"
-
-    # --- LOGIN/LOGOUT Gmail ---
-    # Questa parte ora dovrebbe riflettere correttamente lo stato di st.session_state.authenticated_user_email
-    if st.session_state.authenticated_user_email:
-        st.sidebar.success(f"Connesso come: {st.session_state.authenticated_user_email}")
-        if st.sidebar.button("Logout Gmail"):
-            st.session_state.authenticated_user_email = None
-            # Rimuovi i flag di successo/errore per il prossimo login
-            if "auth_success_shown" in st.session_state: del st.session_state.auth_success_shown
-            if "auth_failure_shown" in st.session_state: del st.session_state.auth_failure_shown
-            st.info("Disconnesso da Gmail.")
-            st.rerun()
-    else:
-        st.sidebar.warning("Non connesso a Gmail.")
-        oauth_url = f"{FLASK_SERVER_BASE_URL}/authorize_gmail"
-        st.sidebar.markdown(f"[Login con Gmail]({oauth_url})", unsafe_allow_html=True)
-        st.sidebar.info("Clicca per autorizzare l'applicazione a inviare email dal tuo account Gmail.")
 
     section = st.sidebar.radio(
         "Seleziona sezione",
@@ -540,24 +491,36 @@ def main():
         horizontal=True
     )
 
+    # Display authenticated user if available
+    if st.session_state.authenticated_user_email:
+        st.sidebar.success(f"Connesso come: {st.session_state.authenticated_user_email}")
+        if st.sidebar.button("Disconnetti Gmail"):
+            st.session_state.authenticated_user_email = None
+            st.info("Disconnesso da Gmail.")
+            st.rerun()
+    else:
+        st.sidebar.warning("Non connesso a Gmail. Alcune funzionalità potrebbero essere limitate.")
+        # Link to initiate OAuth flow on Flask server
+        flask_authorize_url = "https://marzoli95.pythonanywhere.com/authorize_gmail" # Your Flask server's authorize endpoint
+        st.sidebar.markdown(f"[Connetti il tuo account Gmail]({flask_authorize_url})", unsafe_allow_html=True)
+
+
     if section == "Ricerca Email":
         show_scraper_interface()
     elif section == "Invio Email":
-        if st.session_state.authenticated_user_email:
-            st.subheader("Modulo Invio Email Globale")
-            show_email_interface(st.session_state.get("email_json_data", None))
-        else:
-            st.warning("Per inviare email, devi prima autenticarti con il tuo account Gmail.")
+        st.subheader("Modulo Invio Email Globale")
+        # Pass the authenticated user email to the email UI
+        show_email_interface(st.session_state.get("email_json_data", None), st.session_state.authenticated_user_email)
     elif section == "Tracciamento Email":
         email_tracker_ui = EmailTrackerUI()
         email_tracker_ui.show_interface()
 
-    # --- LOGICA DI AUTO-REFRESH GLOBALE ---
-    # Questa parte andrebbe rivista per evitare refresh infiniti se non necessario.
-    # L'auto-refresh dovrebbe essere condizionale o gestito diversamente per il tracking.
+    # --- GLOBAL AUTO-REFRESH LOGIC ---
+    # This is the heart of continuous auto-refresh.
     if section == "Tracciamento Email":
-        time.sleep(3)  # Attende 3 secondi prima di ri-eseguire lo script
-        st.rerun()  # Forza il ricaricamento dell'intera app Streamlit
+        time.sleep(3)  # Waits 3 seconds before re-executing the script
+        st.rerun()  # Forces the entire Streamlit app to reload
+
 
 if __name__ == "__main__":
     main()
