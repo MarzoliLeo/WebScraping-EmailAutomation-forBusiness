@@ -6,7 +6,7 @@ import plotly.express as px
 import requests # Importa requests
 
 # Modifica per puntare all'URL del server Flask su PythonAnywhere
-FLASK_TRACKER_BASE_URL = "[https://marzoli95.pythonanywhere.com](https://marzoli95.pythonanywhere.com)"
+FLASK_TRACKER_BASE_URL = "https://marzoli95.pythonanywhere.com"
 
 # La funzione get_tracking_status e generate_tracked_link sono importate da tracker_logic
 # e già usano FLASK_TRACKER_BASE_URL, quindi non necessitano modifiche qui.
@@ -31,7 +31,7 @@ class EmailTrackerUI:
 
         # Controllo periodico per risposte e rimbalzi (meno frequente dell'UI refresh)
         # Questa chiamata ora DEVE essere fatta al server Flask
-        gmail_check_interval_seconds = 60 # Controlla Gmail ogni 60 secondi
+        gmail_check_interval_seconds = 30 # Controlla Gmail ogni 60 secondi
         current_time_for_gmail_check = time.time()
         if (current_time_for_gmail_check - st.session_state.last_gmail_check_time) > gmail_check_interval_seconds:
             st.session_state.last_gmail_check_time = current_time_for_gmail_check
